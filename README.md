@@ -20,4 +20,5 @@ Looking ahead, there are several avenues for further improvement and expansion o
 possible enhancements include the incorporation of more complex gestures, integrating a machine
 learning algorithm to improve the accuracy and versatility of gesture recognition, and expanding the
 system to control other APIs and devices. 
+For further explanation and demo (Hebrew) - https://youtu.be/CsDU1sN2td8
 ![NVIDIA_Share_RC6vVkMs0R](https://github.com/user-attachments/assets/6b56bd8a-1534-4a41-9259-ce53f0cafb1b)
