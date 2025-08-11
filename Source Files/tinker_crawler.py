@@ -1,3 +1,13 @@
+# TinkerCAD Spotify Control Crawler
+# This script uses Selenium to control Spotify playback through a TinkerCAD simulation.
+# Because TinkerCAD does not support real-time serial communication,
+# this script simulates the control of Spotify playback based on serial output from TinkerCAD.
+# Requirements: 
+# - Selenium
+# - Spotipy
+# - WebDriver Manager for Chrome
+# - TinkerCAD account
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
