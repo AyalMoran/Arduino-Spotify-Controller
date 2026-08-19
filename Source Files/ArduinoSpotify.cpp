@@ -1,82 +1,94 @@
 // =========================================================
-// Constants & Configuration
+// Arduino Spotify Controller
+// Four ultrasonic sensors turn hand gestures into Spotify
+// commands, printed over serial for the Python script.
 // =========================================================
-#define SENSORS    4
-#define THRESHOLD  200
+#include <Arduino.h>
 
-enum Action : int {
-    NEXT,
-    PREV,
-    PLAY,
-    PAUSE,
-    VOLUP,
-    VOLDW,
-    INVLD
+// =========================================================
+// Configuration
+// =========================================================
+constexpr int     SENSOR_COUNT = 4;
+constexpr uint8_t SENSOR_PINS[SENSOR_COUNT] = { 9, 10, 11, 12 };
+
+constexpr unsigned long DETECT_THRESHOLD_CM  = 200;    // 200 for TinkerCAD, ~20 on real hardware
+constexpr unsigned long ECHO_TIMEOUT_US      = 30000;  // max echo wait, ~5 m range
+constexpr unsigned long US_PER_CM_ROUND_TRIP = 58;
+constexpr unsigned long PING_SETTLE_MS       = 30;     // let echoes die out between pings
+constexpr unsigned long GESTURE_TIMEOUT_MS   = 2000;   // give up on a half-finished gesture
+constexpr unsigned long ACTION_COOLDOWN_MS   = 500;    // short break after each command
+
+// =========================================================
+// Gesture Table
+// =========================================================
+// Sensor numbers 1-4, oldest first. The command strings are
+// what the Python script listens for.
+struct Gesture {
+    const char* command;
+    uint8_t     length;
+    uint8_t     pattern[SENSOR_COUNT];
 };
 
-// =========================================================
-// Global Variables
-// =========================================================
-unsigned long previousMillis = 0;
-const    long interval       = 15000;
+const Gesture GESTURES[] = {
+    { "STOP",    2, { 1, 3 } },
+    { "PLAY",    2, { 3, 1 } },
+    { "PREV",    2, { 2, 4 } },
+    { "NEXT",    2, { 4, 2 } },
+    { "VOLUP",   4, { 1, 2, 3, 4 } },
+    { "VOLDOWN", 4, { 1, 4, 3, 2 } },
+};
 
-int sensorsTrig[SENSORS]     = { 9, 10, 11, 12 };
-int sensorsGestures[SENSORS] = { 0, 0, 0, 0 };
-int idx                      = 0;
+constexpr int GESTURE_COUNT = sizeof(GESTURES) / sizeof(GESTURES[0]);
+
+// =========================================================
+// State
+// =========================================================
+uint8_t       history[SENSOR_COUNT]    = { 0 };     // last triggered sensors, oldest first, 0 = empty
+bool          wasInRange[SENSOR_COUNT] = { false };
+unsigned long lastTriggerMillis        = 0;
+unsigned long lastActionMillis         = 0;
 
 // =========================================================
 // Function Prototypes
 // =========================================================
-bool   readSensor(int sensorNumber);
-Action getAction(void);
-void   checkAction(void);
-void   reset(void);
+bool           readSensor(uint8_t sensorPin);
+void           recordTrigger(uint8_t sensorNumber);
+const Gesture* matchGesture();
+void           clearGesture();
+void           expireStaleGesture();
 
 // =========================================================
 // Setup
 // =========================================================
-void setup(void) {
+void setup() {
     Serial.begin(9600);
-
-    for (int i = 0; i < SENSORS; ++i) {
-        pinMode(sensorsTrig[i], OUTPUT);
-    }
+    // no pinMode here, readSensor() switches the shared pin itself
 }
 
 // =========================================================
 // Main Loop
 // =========================================================
-void loop(void) {
-    for (int sensorNumber = 1; sensorNumber <= SENSORS; sensorNumber++) {
-        int lastTriggered = sensorsGestures[(idx + SENSORS - 1) % SENSORS];
+void loop() {
+    expireStaleGesture();
 
-        if (sensorNumber == lastTriggered) {
-            continue;
+    for (int i = 0; i < SENSOR_COUNT; ++i) {
+        bool inRange = readSensor(SENSOR_PINS[i]);
+        bool cooling = (millis() - lastActionMillis < ACTION_COOLDOWN_MS);
+
+        // trigger only when a hand first enters range, no repeats while hovering
+        if (inRange && !wasInRange[i] && !cooling) {
+            recordTrigger(static_cast<uint8_t>(i + 1));
         }
+        wasInRange[i] = inRange;
 
-        if (readSensor(sensorsTrig[sensorNumber - 1])) {
-            sensorsGestures[idx] = sensorNumber;
-            idx                  = (idx + 1) % SENSORS;
-            previousMillis       = millis();
-
-            checkAction();
-        }
-    }
-
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= interval) {
-        Serial.println("No action detected during the last 15 seconds... RESET");
-        previousMillis = currentMillis;
-        reset();
+        delay(PING_SETTLE_MS);
     }
 }
 
 // =========================================================
 // Sensor Reading
 // =========================================================
-bool readSensor(int sensorPin) {
-    long duration, distance;
-
+bool readSensor(uint8_t sensorPin) {
     // Send trigger pulse
     pinMode(sensorPin, OUTPUT);
     digitalWrite(sensorPin, LOW);
@@ -87,71 +99,66 @@ bool readSensor(int sensorPin) {
 
     // Read echo
     pinMode(sensorPin, INPUT);
-    duration = pulseIn(sensorPin, HIGH);
+    unsigned long duration = pulseIn(sensorPin, HIGH, ECHO_TIMEOUT_US);
 
-    // Convert to distance
-    distance = duration / 58;
-
-    return (distance < THRESHOLD);
-}
-
-// =========================================================
-// Determine Action
-// =========================================================
-Action getAction(void) {
-    int trigs[SENSORS] = {
-        sensorsGestures[idx % SENSORS],
-        sensorsGestures[(idx + 1) % SENSORS],
-        sensorsGestures[(idx + 2) % SENSORS],
-        sensorsGestures[(idx + 3) % SENSORS]
-    };
-
-    if (trigs[2] == 1 && trigs[3] == 3) return PAUSE;
-    if (trigs[2] == 3 && trigs[3] == 1) return PLAY;
-    if (trigs[2] == 2 && trigs[3] == 4) return PREV;
-    if (trigs[2] == 4 && trigs[3] == 2) return NEXT;
-    if (trigs[0] == 1 && trigs[1] == 2 && trigs[2] == 3 && trigs[3] == 4) return VOLUP;
-    if (trigs[0] == 1 && trigs[1] == 4 && trigs[2] == 3 && trigs[3] == 2) return VOLDW;
-
-    return INVLD;
-}
-
-// =========================================================
-// Action Handling
-// =========================================================
-void checkAction(void) {
-    switch (getAction()) {
-        case PAUSE: 
-            Serial.println("STOP");
-            break;
-        case PLAY: 
-            Serial.println("PLAY");
-            break;
-        case PREV: 
-            Serial.println("PREV");
-            break;
-        case NEXT: 
-            Serial.println("NEXT");
-            break;
-        case VOLUP: 
-            Serial.println("VOLUP");
-            break;
-        case VOLDW: 
-            Serial.println("VOLDOWN");
-            break;
-        default:
-            return;
+    // 0 = no echo (timeout / dead sensor), not distance 0
+    if (duration == 0) {
+        return false;
     }
-    reset();
+
+    return (duration / US_PER_CM_ROUND_TRIP) < DETECT_THRESHOLD_CM;
 }
 
 // =========================================================
-// Reset Gestures
+// Gesture Recording & Matching
 // =========================================================
-void reset(void) {
-    for (int i = 0; i < SENSORS; ++i) {
-        sensorsGestures[i] = 0;
+void recordTrigger(uint8_t sensorNumber) {
+    // shift left, newest last
+    for (int i = 0; i < SENSOR_COUNT - 1; ++i) {
+        history[i] = history[i + 1];
     }
-    idx = 0;
-    delay(1000);
+    history[SENSOR_COUNT - 1] = sensorNumber;
+    lastTriggerMillis         = millis();
+
+    const Gesture* gesture = matchGesture();
+    if (gesture != nullptr) {
+        Serial.println(gesture->command);
+        clearGesture();
+        lastActionMillis = millis();
+    }
+}
+
+const Gesture* matchGesture() {
+    for (int g = 0; g < GESTURE_COUNT; ++g) {
+        const Gesture& gesture = GESTURES[g];
+        const int offset = SENSOR_COUNT - gesture.length;
+
+        // unfilled slots are 0 so they never match
+        bool matches = true;
+        for (int i = 0; i < gesture.length && matches; ++i) {
+            matches = (history[offset + i] == gesture.pattern[i]);
+        }
+        if (matches) {
+            return &gesture;
+        }
+    }
+    return nullptr;
+}
+
+// =========================================================
+// Reset Handling
+// =========================================================
+void clearGesture() {
+    // keep wasInRange, a hovering hand must leave before triggering again
+    for (int i = 0; i < SENSOR_COUNT; ++i) {
+        history[i] = 0;
+    }
+}
+
+void expireStaleGesture() {
+    bool historyEmpty = (history[SENSOR_COUNT - 1] == 0);
+    if (!historyEmpty && millis() - lastTriggerMillis >= GESTURE_TIMEOUT_MS) {
+        Serial.println("# gesture timed out");  // '#' = debug line, not a command
+        clearGesture();
+    }
 }
